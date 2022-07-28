@@ -1,12 +1,11 @@
-import { Component, OnInit, Output, EventEmitter, Input, ViewChild, OnDestroy } from '@angular/core';
-import { ToastComponent } from '../toast/toast.component';
-import { HelperService } from '../../services/helper.service';
-import { HttpService } from '../../services/http.service';
-import { LoaderService } from '../../services/loader.service';
-import { TableSettingsModalComponent } from '../modals/table-settings-modal/table-settings-modal.component';
-import { TableSettings } from '../../interfaces/table-settings';
+import { Component, Output, EventEmitter, Input, ViewChild, OnInit } from '@angular/core';
+import { ToastComponent } from '../../shared/components/toast/toast.component';
+import { HelperService } from '../../shared/services/helper.service';
+import { HttpService } from '../../shared/services/http.service';
+import { TableSettingsModalComponent } from '../../shared/components/modals/table-settings-modal/table-settings-modal.component';
+import { TableSettings } from '../../shared/interfaces/table-settings';
 import { catchError } from 'rxjs';
-import { Report } from '../../interfaces/report';
+import { Report } from '../../shared/interfaces/report';
 import { CookieService } from 'ngx-cookie-service';
 
 @Component({
@@ -14,8 +13,9 @@ import { CookieService } from 'ngx-cookie-service';
   templateUrl: './table.component.html',
   styleUrls: ['./table.component.css'],
 })
-export class TableComponent implements OnInit, OnDestroy {
+export class TableComponent implements OnInit {
   DEFAULT_DISPLAY_AMOUNT: number = 10;
+  metadataCount = 0;
   viewSettings: any = {
     defaultView: '',
     views: [],
@@ -35,6 +35,7 @@ export class TableComponent implements OnInit, OnDestroy {
   };
   @Output() openReportEvent = new EventEmitter<any>();
   @Output() openCompareReportsEvent = new EventEmitter<any>();
+  @Output() openSelectedCompareReportsEvent = new EventEmitter<any>();
   @Output() changeViewEvent = new EventEmitter<any>();
   @ViewChild(ToastComponent) toastComponent!: ToastComponent;
   @ViewChild(TableSettingsModalComponent)
@@ -51,26 +52,12 @@ export class TableComponent implements OnInit, OnDestroy {
   constructor(
     private httpService: HttpService,
     public helperService: HelperService,
-    private loaderService: LoaderService,
     private cookieService: CookieService
   ) {}
 
   ngOnInit(): void {
-    const tableSettings = this.loaderService.getTableSettings(this._id);
-    const viewSettings = this.loaderService.getViewSettings();
-    if (!tableSettings.tableLoaded) {
-      this.cookieService.set('transformationEnabled', 'true');
-      this.loadData();
-    } else {
-      this.tableSettings = tableSettings;
-      this.viewSettings = viewSettings;
-      this.changeViewEvent.emit(this.viewSettings.currentView);
-    }
-  }
-
-  ngOnDestroy(): void {
-    this.loaderService.saveTableSettings(this._id, this.tableSettings);
-    this.loaderService.saveViewSettings(this.viewSettings);
+    this.cookieService.set('transformationEnabled', 'true');
+    this.loadData();
   }
 
   retrieveRecords() {
@@ -80,7 +67,7 @@ export class TableComponent implements OnInit, OnDestroy {
     }
 
     this.httpService
-      .getReports(
+      .getMetadataReports(
         this.tableSettings.displayAmount,
         regexFilter,
         this.viewSettings.currentView.metadataNames,
@@ -99,6 +86,8 @@ export class TableComponent implements OnInit, OnDestroy {
           catchError(this.httpService.handleError());
         },
       });
+
+    this.loadMetadataCount();
   }
 
   getViewNames() {
@@ -124,6 +113,12 @@ export class TableComponent implements OnInit, OnDestroy {
     });
 
     this.loadReportInProgressSettings();
+  }
+
+  loadMetadataCount() {
+    this.httpService.getMetadataCount(this.viewSettings.currentView.storageName).subscribe((count: any) => {
+      this.metadataCount = count;
+    });
   }
 
   loadReportInProgressSettings() {
@@ -168,25 +163,31 @@ export class TableComponent implements OnInit, OnDestroy {
   }
 
   compareTwoReports() {
-    let compareReports: Report[] = [];
+    let compareReports: any = {};
 
-    this.tableSettings.reportMetadata
+    let selectedReports: string[] = this.tableSettings.reportMetadata
       .filter((report) => report.checked)
-      .forEach((checkedReport) => {
-        this.httpService.getReport(checkedReport.storageId, this.viewSettings.currentView.storageName).subscribe({
-          next: (data) => {
-            let report: Report = data.report;
-            report.xml = data.xml;
-            compareReports.push(report);
-          },
-          complete: () => {
-            this.openCompareReportsEvent.emit({
-              originalReport: compareReports[0],
-              runResultReport: compareReports[1],
-            });
-          },
-        });
-      });
+      .map((report) => report.storageId);
+    this.httpService.getReports(selectedReports, this.viewSettings.currentView.storageName).subscribe({
+      next: (data) => {
+        let leftObject = data[selectedReports[0]];
+        let originalReport = leftObject.report;
+        originalReport.xml = leftObject.xml;
+
+        let rightObject = data[selectedReports[1]];
+        let runResultReport = rightObject.report;
+        runResultReport.xml = rightObject.xml;
+
+        compareReports = {
+          originalReport: originalReport,
+          runResultReport: runResultReport,
+        };
+      },
+
+      complete: () => {
+        this.openSelectedCompareReportsEvent.emit(compareReports);
+      },
+    });
   }
 
   changeFilter(event: any, header: string): void {
@@ -196,7 +197,7 @@ export class TableComponent implements OnInit, OnDestroy {
 
   changeTableLimit(event: any): void {
     this.tableSettings.displayAmount = event.target.value === '' ? 0 : event.target.value;
-    this.loadData();
+    this.retrieveRecords();
   }
 
   refresh(): void {
@@ -254,15 +255,7 @@ export class TableComponent implements OnInit, OnDestroy {
       (totalQuery: string, selectedReport: any) => totalQuery + 'id=' + selectedReport.storageId + '&',
       '?'
     );
-    window.open(
-      'api/report/download/' +
-        this.viewSettings.currentView.storageName +
-        '/' +
-        exportBinary +
-        '/' +
-        exportXML +
-        queryString.slice(0, -1)
-    );
+    this.helperService.download(queryString, this.viewSettings.currentView.storageName, exportBinary, exportXML);
   }
 
   uploadReports(event: any): void {

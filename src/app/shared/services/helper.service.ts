@@ -1,14 +1,14 @@
 import { Injectable } from '@angular/core';
 import { Sort } from '@angular/material/sort';
-import { Checkpoint } from '../interfaces/checkpoint';
 import { Report } from '../interfaces/report';
+import { CookieService } from 'ngx-cookie-service';
 
 @Injectable({
   providedIn: 'root',
 })
 export class HelperService {
   THROWABLE_ENCODER = 'printStackTrace()';
-  constructor() {}
+  constructor(private cookieService: CookieService) {}
 
   getImage(type: number, encoding: string, even: boolean): string {
     let img = 'assets/tree-icons/';
@@ -89,53 +89,85 @@ export class HelperService {
     return (a < b ? -1 : 1) * (isAsc ? 1 : -1);
   }
 
-  twoReportsAreEqual(a: Report, b: Report): boolean {
-    return (
-      a.checkpoints.length === b.checkpoints.length &&
-      this.compareAllCheckpoints(a.checkpoints, b.checkpoints) &&
-      a.description === b.description &&
-      a.estimatedMemoryUsage === b.estimatedMemoryUsage &&
-      a.fullPath === b.fullPath &&
-      this.twoCheckpointsAreEqual(a.inputCheckpoint, b.inputCheckpoint) &&
-      a.name === b.name &&
-      a.numberOfCheckpoints === b.numberOfCheckpoints &&
-      a.originalEndpointOrAbortpointForCurrentLevel === b.originalEndpointOrAbortpointForCurrentLevel &&
-      a.path === b.path &&
-      a.reportFilterMatching === b.reportFilterMatching &&
-      a.stubStrategy === b.stubStrategy &&
-      a.transformation === b.transformation &&
-      a.variableCsv === b.variableCsv &&
-      a.variablesAsMap === b.variablesAsMap
+  download(queryString: string, storage: string, exportBinary: boolean, exportXML: boolean) {
+    window.open(
+      'api/report/download/' + storage + '/' + exportBinary + '/' + exportXML + '?' + queryString.slice(0, -1)
     );
   }
 
-  compareAllCheckpoints(a: Checkpoint[], b: Checkpoint[]) {
-    for (const [i, element] of a.entries()) {
-      if (!this.twoCheckpointsAreEqual(element, b[i])) {
-        return false;
-      }
+  convertReportToJqxTree(report: Report) {
+    let index: number = 0;
+    let parentMap: any[] = [];
+
+    let showingId = this.getCheckpointOrStorageId(report, true);
+    let rootNode = this.createNode(report, showingId, '', index++, -1);
+    this.createChildNodes(rootNode, index, parentMap);
+    return rootNode;
+  }
+
+  createNode(report: Report, showingId: string, icon: string, index: number, level: number) {
+    return {
+      label: showingId + report.name,
+      icon: icon,
+      value: report,
+      expanded: true,
+      id: Math.random(),
+      index: index,
+      items: [],
+      level: level,
+    };
+  }
+
+  getCheckpointOrStorageId(checkpoint: any, root: boolean): string {
+    if (root && this.cookieService.get('showReportStorageIds')) {
+      return this.cookieService.get('showReportStorageIds') === 'true' ? '[' + checkpoint.storageId + '] ' : '';
+    } else if (this.cookieService.get('showCheckpointIds')) {
+      return this.cookieService.get('showCheckpointIds') === 'true' ? checkpoint.index + '. ' : '';
+    } else {
+      return '';
     }
-    return true;
   }
 
-  twoCheckpointsAreEqual(a: Checkpoint, b: Checkpoint): boolean {
-    return (
-      a.encoding === b.encoding &&
-      a.estimatedMemoryUsage === b.estimatedMemoryUsage &&
-      a.index === b.index &&
-      a.level === b.level &&
-      a.message === b.message &&
-      a.messageClassName === b.messageClassName &&
-      a.name === b.name &&
-      a.preTruncatedMessageLength === b.preTruncatedMessageLength &&
-      a.sourceClassName === b.sourceClassName &&
-      a.streaming === b.streaming &&
-      a.stub === b.stub &&
-      a.stubNotFound === b.stubNotFound &&
-      a.stubbed === b.stubbed &&
-      a.type === b.type &&
-      a.typeAsString === b.typeAsString &&
-      a.waitingForStream === b.waitingForStream
-    );
+  createChildNodes(rootNode: any, index: number, parentMap: any[]) {
+    let previousNode = rootNode;
+    for (let checkpoint of rootNode.value.checkpoints) {
+      const img: string = this.getImage(checkpoint.type, checkpoint.encoding, checkpoint.level % 2 == 0);
+      let showingId = this.getCheckpointOrStorageId(checkpoint, false);
+      const currentNode: any = this.createNode(checkpoint, showingId, img, index++, checkpoint.level);
+      this.createHierarchy(previousNode, currentNode, parentMap);
+      previousNode = currentNode;
+    }
+  }
+
+  createHierarchy(previousNode: any, node: any, parentMap: any[]): void {
+    // If the level is higher, then the previous node was its parent
+    if (node.level > previousNode.level) {
+      this.addChild(previousNode, node, parentMap);
+
+      // If the level is lower, then the previous node is a (grand)child of this node's sibling
+    } else if (node.level < previousNode.level) {
+      this.findParent(node, previousNode, parentMap);
+
+      // Else the level is equal, meaning the previous node is its sibling
+    } else {
+      const newParent: any = parentMap.find((x) => x.id == previousNode.id).parent;
+      this.addChild(newParent, node, parentMap);
+    }
+  }
+
+  findParent(currentNode: any, potentialParent: any, parentMap: any[]): any {
+    // If the level difference is only 1, then the potential parent is the actual parent
+    if (currentNode.level - 1 == potentialParent.level) {
+      this.addChild(potentialParent, currentNode, parentMap);
+      return currentNode;
+    }
+
+    const newPotentialParent: any = parentMap.find((node) => node.id == potentialParent.id).parent;
+    return this.findParent(currentNode, newPotentialParent, parentMap);
+  }
+
+  addChild(parent: any, node: any, parentMap: any[]): void {
+    parentMap.push({ id: node.id, parent: parent });
+    parent.items.push(node);
   }
 }
